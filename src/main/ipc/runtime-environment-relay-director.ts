@@ -19,6 +19,12 @@ const RelayResolveResponseSchema = z.object({
   assignmentEpoch: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
 })
 
+export class RuntimeRelayResolveError extends Error {
+  constructor(readonly status: number) {
+    super(`relay_resolve_failed_${status}`)
+  }
+}
+
 /** Asks the director which cell now owns a host after its old cell refused the resume credential. */
 export async function resolveRuntimeRelayEndpoint(
   relay: MobileRelayEndpoint,
@@ -35,7 +41,7 @@ export async function resolveRuntimeRelayEndpoint(
   )
   if (!response.ok) {
     await cancelUnreadResponseBody(response)
-    throw new Error(`relay_resolve_failed_${response.status}`)
+    throw new RuntimeRelayResolveError(response.status)
   }
   const raw = await response.text()
   if (raw.length > MAX_RELAY_RESOLVE_RESPONSE_CHARACTERS) {

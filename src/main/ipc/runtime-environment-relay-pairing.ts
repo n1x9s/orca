@@ -51,12 +51,16 @@ export async function pairRuntimeEnvironmentThroughRelay(
   let session = await open(relay.cellUrl)
   if (session.kind === 'failed' && isCellMove(session.close)) {
     const director = await open(relay.directorUrl)
-    if (
-      director.kind === 'failed' &&
+    if (director.kind === 'ready') {
+      director.close()
+    } else if (
       director.close.kind === 'moved' &&
       director.close.assignmentEpoch > relay.assignmentEpoch
     ) {
       session = await open(director.close.cellUrl)
+    } else {
+      // Why: a cell answers an expired or spent invite with WRONG_CELL; only the director names it.
+      session = director
     }
   }
   if (session.kind === 'failed') {
@@ -185,7 +189,26 @@ function describeInviteFailure(close: RuntimeRelayLinkClose): RemotePairingFailu
       'The Orca server is not connected to Orca Relay. Confirm orca serve --relay is still running.'
     )
   }
-  return failure('host-unreachable', 'Cannot reach the Orca server through Orca Relay.')
+  return failure(
+    'host-unreachable',
+    `Cannot reach the Orca server through Orca Relay (${describeRelayClose(close)}).`
+  )
+}
+
+// Why: a generic "cannot reach" hides whether the network, the cell, or the handshake failed.
+function describeRelayClose(close: RuntimeRelayLinkClose): string {
+  switch (close.kind) {
+    case 'refused':
+      return `Relay code ${close.code}`
+    case 'closed':
+      return close.reason ? `${close.code}: ${close.reason}` : `connection closed ${close.code}`
+    case 'protocol':
+      return close.message
+    case 'identity':
+    case 'moved':
+    case 'unauthorized':
+      return close.kind
+  }
 }
 
 function failure(kind: RemotePairingFailure['kind'], message: string): RemotePairingFailure {

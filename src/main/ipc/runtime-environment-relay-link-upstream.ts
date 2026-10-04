@@ -5,7 +5,10 @@ import {
   type MobileRelayEndpoint
 } from '../../shared/mobile-relay-credential-contract'
 import type { RuntimeEnvironmentRelayRoute } from '../../shared/runtime-environments'
-import { resolveRuntimeRelayEndpoint } from './runtime-environment-relay-director'
+import {
+  resolveRuntimeRelayEndpoint,
+  RuntimeRelayResolveError
+} from './runtime-environment-relay-director'
 import { openRuntimeRelayLink, type RuntimeRelayLinkClose } from './runtime-environment-relay-link'
 import { RuntimeRelayLinkRpc } from './runtime-environment-relay-rpc'
 import type {
@@ -60,6 +63,14 @@ export async function openRelayBridgeUpstream(
       endpoint = resolved
       target.writeRoute((current) => ({ ...current, endpoint: resolved }))
     } catch (error) {
+      // Why: a cell answers an unknown or revoked resume token with WRONG_CELL; only the director names it.
+      if (error instanceof RuntimeRelayResolveError && error.status === 401) {
+        return {
+          ok: false,
+          unauthorized: true,
+          message: 'Orca Relay no longer accepts this access.'
+        }
+      }
       return {
         ok: false,
         unauthorized: false,

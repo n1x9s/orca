@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync } from 'node:fs'
+import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -62,15 +63,20 @@ async function startHarness(options: { cellHonorsRevoke: boolean }) {
     throw new Error('expected a TCP address for the fake cell')
   }
   const cellUrl = `http://127.0.0.1:${address.port}`
-  const connectUrl = (_baseUrl: string, hostId: string) =>
-    `ws://127.0.0.1:${address.port}/v1/connect/${hostId}`
   const installs = new Map<string, DeviceCredentialInstalled>()
   const revokedDevices = new Set<string>()
-  const state: { resumeHash: string | null; deviceId: string; clientConnections: number } = {
-    resumeHash: null,
+  const state = {
+    resumeHash: '',
     deviceId: '',
-    clientConnections: 0
+    clientConnections: 0,
+    inviteSpent: false,
+    // Why: lets a test make the next resume dial land on a cell that no longer owns the host.
+    moveNextResume: false,
+    dropNextClient: false
   }
+  const credentialAccepted = (credential: string): boolean =>
+    hashRuntimeRelayCredential(credential) === state.resumeHash &&
+    !(options.cellHonorsRevoke && revokedDevices.has(state.deviceId))
 
   await server.start()
   cleanups.push(() => server.stop())
@@ -83,6 +89,34 @@ async function startHarness(options: { cellHonorsRevoke: boolean }) {
     relayHostId,
     e2eeFraming: 2 as const
   }
+  const connectUrl = (baseUrl: string, hostId: string) =>
+    baseUrl === relayEndpoint.directorUrl
+      ? `ws://127.0.0.1:${address.port}/director/v1/connect/${hostId}`
+      : `ws://127.0.0.1:${address.port}/v1/connect/${hostId}`
+  // Mirrors the real director: unknown or revoked resume tokens are 401, owned ones resolve.
+  const director = createServer((request, response) => {
+    let body = ''
+    request.on('data', (chunk) => (body += chunk))
+    request.on('end', () => {
+      const token: unknown = JSON.parse(body).resumeToken
+      const known = typeof token === 'string' && credentialAccepted(token)
+      response.writeHead(known ? 200 : 401, { 'content-type': 'application/json' })
+      response.end(
+        JSON.stringify(
+          known
+            ? { v: 1, cellUrl: 'https://cell-2.relay.test', assignmentEpoch: 2, leaseExpiresAt: 0 }
+            : { error: 'invalid_credential' }
+        )
+      )
+    })
+  })
+  await new Promise<void>((resolve) => director.listen(0, '127.0.0.1', resolve))
+  const directorAddress = director.address()
+  if (!directorAddress || typeof directorAddress === 'string') {
+    throw new Error('expected a TCP address for the fake director')
+  }
+  const directorUrl = `http://127.0.0.1:${directorAddress.port}`
+  cleanups.push(() => new Promise<void>((resolve) => director.close(() => resolve())))
   server.setMobileRelayPairingProvider({
     createPairingRelay: async (relayDeviceId) => ({
       relay: {
@@ -154,6 +188,9 @@ async function startHarness(options: { cellHonorsRevoke: boolean }) {
         socket.on('message', (data, isBinary) => forward(pending.client, data, isBinary))
         pending.client.on('message', (data, isBinary) => forward(socket, data, isBinary))
         socket.once('close', () => pending.client.close(4408))
+        if (pending.kind === 'invite') {
+          state.inviteSpent = true
+        }
         pending.client.once('close', () => socket.close())
         pending.client.send(
           JSON.stringify(
@@ -181,16 +218,29 @@ async function startHarness(options: { cellHonorsRevoke: boolean }) {
         typeof auth === 'object' && auth !== null && 'credential' in auth
           ? String(auth.credential)
           : ''
-      const kind =
-        credential === INVITE_TOKEN
-          ? 'invite'
-          : hashRuntimeRelayCredential(credential) === state.resumeHash &&
-              !(options.cellHonorsRevoke && revokedDevices.has(state.deviceId))
-            ? 'resume'
-            : null
-      if (!kind) {
-        socket.send(JSON.stringify({ type: 'relay-hello', ok: false, code: 4401 }))
-        socket.close(4401)
+      if (state.dropNextClient) {
+        state.dropNextClient = false
+        socket.close(1011, 'cell overloaded')
+        return
+      }
+      const inviteUsable = credential === INVITE_TOKEN && !state.inviteSpent
+      if (request.url?.startsWith('/director/')) {
+        socket.send(
+          JSON.stringify(
+            inviteUsable
+              ? { type: 'relay-moved', v: 1, cellUrl: relayEndpoint.cellUrl, assignmentEpoch: 2 }
+              : { type: 'relay-hello', ok: false, code: 4401 }
+          )
+        )
+        socket.close(inviteUsable ? 4503 : 4401)
+        return
+      }
+      const kind = inviteUsable ? 'invite' : credentialAccepted(credential) ? 'resume' : null
+      // Why 4409: a real cell cannot tell a revoked or spent credential from a moved host.
+      if (!kind || (kind === 'resume' && state.moveNextResume)) {
+        state.moveNextResume = false
+        socket.send(JSON.stringify({ type: 'relay-hello', ok: false, code: 4409 }))
+        socket.close(4409)
         return
       }
       state.clientConnections += 1
@@ -224,7 +274,7 @@ async function startHarness(options: { cellHonorsRevoke: boolean }) {
   if (!relayOffer?.relay) {
     throw new Error('expected Relay metadata in the runtime pairing link')
   }
-  return { server, state, connectUrl, offer, relayOffer, revokedDevices }
+  return { server, state, connectUrl, directorUrl, offer, relayOffer, revokedDevices }
 }
 
 async function pairAndBridge(
@@ -240,7 +290,7 @@ async function pairAndBridge(
     throw new Error(`relay pairing failed: ${paired.message}`)
   }
   let route: RuntimeEnvironmentRelayRoute = {
-    ...paired.route,
+    endpoint: { ...paired.route.endpoint, directorUrl: harness.directorUrl },
     credential: {
       ...paired.route.credential,
       expiresAt: overrides.expiresAt ?? paired.route.credential.expiresAt
@@ -303,7 +353,7 @@ describe('runtime pairing through Orca Relay', () => {
     await expect(statusThrough(pairing)).rejects.toMatchObject({ code: 'unauthorized' })
   }, 20_000)
 
-  it('reports a revoked cloud credential as unauthorized', async () => {
+  it('reports a revoked cloud credential as unauthorized once the director refuses it', async () => {
     const harness = await startHarness({ cellHonorsRevoke: true })
     const { pairing } = await pairAndBridge(harness)
 
@@ -352,6 +402,45 @@ describe('runtime pairing through Orca Relay', () => {
       })
     ).resolves.toMatchObject({ ok: true })
     expect(harness.state.clientConnections).toBe(relayDialsAfterPairing + 1)
+  }, 20_000)
+
+  it('follows the director to the cell that now owns the server', async () => {
+    const harness = await startHarness({ cellHonorsRevoke: true })
+    const { pairing, readRoute } = await pairAndBridge(harness)
+    harness.state.moveNextResume = true
+
+    await expect(statusThrough(pairing)).resolves.toMatchObject({ ok: true })
+
+    expect(readRoute().endpoint).toMatchObject({
+      cellUrl: 'https://cell-2.relay.test',
+      assignmentEpoch: 2
+    })
+  }, 20_000)
+
+  it('reports a spent invite as an invalid link instead of an unreachable server', async () => {
+    const harness = await startHarness({ cellHonorsRevoke: true })
+    await pairAndBridge(harness)
+
+    await expect(
+      pairRuntimeEnvironmentThroughRelay(harness.relayOffer, harness.relayOffer.relay!, {
+        connectUrl: harness.connectUrl
+      })
+    ).resolves.toMatchObject({ ok: false, kind: 'access-link-invalid' })
+  }, 20_000)
+
+  it('names why pairing could not reach the server through Relay', async () => {
+    const harness = await startHarness({ cellHonorsRevoke: true })
+    harness.state.dropNextClient = true
+
+    await expect(
+      pairRuntimeEnvironmentThroughRelay(harness.relayOffer, harness.relayOffer.relay!, {
+        connectUrl: harness.connectUrl
+      })
+    ).resolves.toEqual({
+      ok: false,
+      kind: 'host-unreachable',
+      message: 'Cannot reach the Orca server through Orca Relay (1011: cell overloaded).'
+    })
   }, 20_000)
 
   it('refuses a link whose Relay host id does not belong to the pinned server key', async () => {
