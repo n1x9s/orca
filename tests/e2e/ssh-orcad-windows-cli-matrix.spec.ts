@@ -3,9 +3,9 @@
  * test (config/ci/windows-ssh-provider/invoke-pinned-relay-cells.ps1 greps by tag):
  *
  * - `@orcad-cli-managed`: an empty host deploys; `host list`/`environment list|show` name it; a CLI
- *   terminal survives disconnect/reconnect; a hard orcad restart reads unverifiable then live,
- *   never retired; `environment rm` refuses a managed server, the stop decommissions it and cleans
- *   the host, and the next connect redeploys.
+ *   terminal survives disconnect/reconnect; `environment rm` refuses a managed server, the stop
+ *   decommissions it and cleans the host, and the next connect redeploys; last, a hard orcad restart
+ *   reads unverifiable then live, never retired.
  * - `@orcad-cli-convert`: a seeded relay-era profile converts, keeps then retires its source, and the
  *   CLI reaches the converted server's projects.
  * - `@orcad-cli-relay-kept`: an open relay terminal keeps the host on the relay with its status line;
@@ -200,7 +200,7 @@ async function hostVerdict(page: Page, environmentId: string): Promise<string> {
   return contact.verdict === 'unverifiable' ? `unverifiable:${contact.reason}` : contact.verdict
 }
 
-test('@orcad-cli-managed an empty Windows host deploys, serves CLI terminals through reconnect and an orcad restart, then decommissions', async (// oxlint-disable-next-line no-empty-pattern -- This test owns its launch through a restart session.
+test('@orcad-cli-managed an empty Windows host deploys, serves CLI terminals through reconnect, decommissions and redeploys, then survives an orcad restart', async (// oxlint-disable-next-line no-empty-pattern -- This test owns its launch through a restart session.
 {}, testInfo) => {
   skipUnlessWindowsHost()
   test.setTimeout(40 * 60_000)
@@ -290,53 +290,6 @@ test('@orcad-cli-managed an empty Windows host deploys, serves CLI terminals thr
     await sendLine(userData, environmentId, handle, `echo ${after}`)
     await waitForEchoedLine(userData, environmentId, handle, after)
 
-    // (d) orcad restart: unreachable reads unverifiable, never retired or refused, then live again.
-    expect(await hostVerdict(page, environmentId)).toBe('live')
-    const killed = await killHostOrcad(descriptor.home)
-    expect(killed, 'an orcad process to restart').not.toHaveLength(0)
-    const verdicts: string[] = []
-    const sample = async (): Promise<string> => {
-      const verdict = await hostVerdict(page, environmentId)
-      if (verdicts.at(-1) !== verdict) {
-        verdicts.push(verdict)
-      }
-      return verdict
-    }
-    await expect.poll(sample, { timeout: 90_000 }).toMatch(/^unverifiable:/u)
-    let recoveredBy = 'automatic'
-    try {
-      await expect.poll(sample, { timeout: 120_000 }).toBe('live')
-    } catch {
-      recoveredBy = 'reconnect'
-      testInfo.annotations.push({
-        type: 'restart-reconnect',
-        description: await reconnect(page, targetId)
-      })
-      await expect.poll(sample, { timeout: 4 * 60_000 }).toBe('live')
-    }
-    testInfo.annotations.push({
-      type: 'restart-verdicts',
-      description: `${recoveredBy}: ${verdicts.join(' -> ')}`
-    })
-    expect(verdicts.filter((verdict) => !/^(live|unverifiable:)/u.test(verdict))).toEqual([])
-    expect(await listHostOrcadProcesses(descriptor.home)).not.toHaveLength(0)
-    const afterRestart = await orcaCliResult<RuntimeTerminalListResult>(userData, [
-      'terminal',
-      'list',
-      '--environment',
-      environmentId
-    ])
-    testInfo.annotations.push({
-      type: 'terminal-after-restart',
-      description: JSON.stringify(
-        afterRestart.terminals.map((terminal) => ({
-          handle: terminal.handle,
-          connected: terminal.connected,
-          exitCause: terminal.exitCause
-        }))
-      )
-    })
-
     // (e) `environment rm` refuses a server Orca manages over SSH; the stop decommissions it.
     const refused = await runCompiledOrcaCli(userData, [
       'environment',
@@ -377,6 +330,87 @@ test('@orcad-cli-managed an empty Windows host deploys, serves CLI terminals thr
     const redeployed = await waitForManaged(page, targetId)
     expect(await environmentIds(userData)).toContain(redeployed)
     expect(await listHostOrcadProcesses(descriptor.home)).not.toHaveLength(0)
+
+    // A terminal on the redeployed server, so the restart below shows what happens to it.
+    // Why unchecked: the decommissioned server's catalog may or may not have kept the repo.
+    await runCompiledOrcaCli(userData, [
+      'repo',
+      'add',
+      '--environment',
+      redeployed,
+      '--path',
+      host.remoteRepoPath,
+      '--json'
+    ])
+    const redeployedWorktree = (
+      await orcaCliResult<{ worktrees: { id: string; path: string }[] }>(userData, [
+        'worktree',
+        'list',
+        '--environment',
+        redeployed
+      ])
+    ).worktrees.find((entry) => samePath(entry.path, host.remoteRepoPath))
+    expect(redeployedWorktree, `a worktree at ${host.remoteRepoPath}`).toBeTruthy()
+    const restartHandle = (
+      await orcaCliResult<{ terminal: { handle: string } }>(userData, [
+        'terminal',
+        'create',
+        '--environment',
+        redeployed,
+        '--worktree',
+        `id:${redeployedWorktree!.id}`
+      ])
+    ).terminal.handle
+    const beforeRestart = `ORCA_CLI_RESTART_${Date.now()}`
+    await sendLine(userData, redeployed, restartHandle, `echo ${beforeRestart}`)
+    await waitForEchoedLine(userData, redeployed, restartHandle, beforeRestart)
+
+    // (d) Last, since a relaunch on connect is still landing: orcad restart: unreachable reads unverifiable, never retired or refused, then live again.
+    expect(await hostVerdict(page, redeployed)).toBe('live')
+    const killed = await killHostOrcad(descriptor.home)
+    expect(killed, 'an orcad process to restart').not.toHaveLength(0)
+    const verdicts: string[] = []
+    const sample = async (): Promise<string> => {
+      const verdict = await hostVerdict(page, redeployed)
+      if (verdicts.at(-1) !== verdict) {
+        verdicts.push(verdict)
+      }
+      return verdict
+    }
+    await expect.poll(sample, { timeout: 90_000 }).toMatch(/^unverifiable:/u)
+    let recoveredBy = 'automatic'
+    try {
+      await expect.poll(sample, { timeout: 120_000 }).toBe('live')
+    } catch {
+      recoveredBy = 'reconnect'
+      testInfo.annotations.push({
+        type: 'restart-reconnect',
+        description: await reconnect(page, targetId)
+      })
+      await expect.poll(sample, { timeout: 4 * 60_000 }).toBe('live')
+    }
+    testInfo.annotations.push({
+      type: 'restart-verdicts',
+      description: `${recoveredBy}: ${verdicts.join(' -> ')}`
+    })
+    expect(verdicts.filter((verdict) => !/^(live|unverifiable:)/u.test(verdict))).toEqual([])
+    expect(await listHostOrcadProcesses(descriptor.home)).not.toHaveLength(0)
+    const afterRestart = await orcaCliResult<RuntimeTerminalListResult>(userData, [
+      'terminal',
+      'list',
+      '--environment',
+      redeployed
+    ])
+    testInfo.annotations.push({
+      type: 'terminal-after-restart',
+      description: JSON.stringify(
+        afterRestart.terminals.map((terminal) => ({
+          handle: terminal.handle,
+          connected: terminal.connected,
+          exitCause: terminal.exitCause
+        }))
+      )
+    })
   } finally {
     if (app) {
       await session.close(app)
