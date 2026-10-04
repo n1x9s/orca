@@ -246,6 +246,13 @@ test('@orcad-cli-managed an empty Windows host deploys, serves CLI terminals thr
       environmentId
     ])
     expect(shown.environment.id).toBe(environmentId)
+    const status = await orcaCliResult(userData, [
+      'environment',
+      'status',
+      '--environment',
+      environmentId
+    ])
+    testInfo.annotations.push({ type: 'environment-status', description: JSON.stringify(status) })
 
     await orcaCliResult(userData, [
       'repo',
@@ -300,6 +307,15 @@ test('@orcad-cli-managed an empty Windows host deploys, serves CLI terminals thr
     ])
     expect(refused.code, refused.stdout).not.toBe(0)
     expect(`${refused.stdout}${refused.stderr}`).toContain('managed by Orca over SSH')
+    expect(`${refused.stdout}${refused.stderr}`).toContain('orca environment stop')
+    const unconfirmed = await runCompiledOrcaCli(userData, [
+      'environment',
+      'stop',
+      '--environment',
+      environmentId,
+      '--json'
+    ])
+    expect(unconfirmed.json?.error?.code, unconfirmed.stdout).toBe('confirmation_required')
     await orcaCliResult(userData, [
       'terminal',
       'close',
@@ -309,10 +325,13 @@ test('@orcad-cli-managed an empty Windows host deploys, serves CLI terminals thr
       `id:${worktree!.id}`,
       '--all'
     ])
-    const stopped = await page.evaluate(
-      (id) => window.api.runtimeEnvironments.managedOrcad!.stop({ selector: id }),
-      environmentId
-    )
+    const stopped = await orcaCliResult(userData, [
+      'environment',
+      'stop',
+      '--environment',
+      environmentId,
+      '--yes'
+    ])
     expect(stopped, JSON.stringify(stopped)).toMatchObject({
       outcome: 'unlinked',
       verdict: 'exited'
@@ -576,13 +595,24 @@ test('@orcad-cli-relay-kept an open relay terminal keeps a Windows host on the r
     })
 
     // The CLI closes the relay terminals; with none left, the next connect converts.
-    await orcaCliResult(session.userDataDir, [
+    // Why not orcaCliResult: a relay that doesn't confirm the exit answers terminal_stop_unverifiable;
+    // the sessions and leases polled below are the proof either way.
+    const closed = await runCompiledOrcaCli(session.userDataDir, [
       'terminal',
       'close',
       '--worktree',
       `id:${remote.worktreeId}`,
-      '--all'
+      '--all',
+      '--json'
     ])
+    testInfo.annotations.push({
+      type: 'relay-terminal-close',
+      description: closed.stdout.slice(0, 2_000)
+    })
+    expect(
+      closed.json?.ok || closed.json?.error?.code === 'terminal_stop_unverifiable',
+      closed.stdout
+    ).toBe(true)
     await expect
       .poll(
         async () =>
