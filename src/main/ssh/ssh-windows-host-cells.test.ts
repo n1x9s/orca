@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  isWindowsOrcadCellId,
-  WINDOWS_CONVERT_CELL_ID,
+  isWindowsHostCellId,
   parseWindowsHostCellDescriptor,
   WINDOWS_FORBIDDEN_TOOLS,
   WINDOWS_HOST_CELL_IDS,
@@ -31,7 +30,11 @@ describe('Windows SSH-host cells', () => {
       ['pinned-powershell', 'powershell', 'pinned-node'],
       ['legacy-opt-out', 'cmd', 'legacy']
     ])
-    expect(cells[0].expect).toEqual({ outcome: 'launched', rung: 'A', target: 'win32-x64' })
+    expect(cells[0].expect).toEqual({
+      outcome: 'launched',
+      rung: 'A',
+      target: 'win32-x64'
+    })
     expect(cells[2].expect).toEqual({ outcome: 'legacy_opt_out' })
   })
 
@@ -46,7 +49,7 @@ describe('Windows SSH-host cells', () => {
   it('reads the descriptor PowerShell writes, BOM included', () => {
     const parsed = parseWindowsHostCellDescriptor(`\uFEFF${JSON.stringify(DESCRIPTOR)}`)
     expect(parsed).toEqual(DESCRIPTOR)
-    if (isWindowsOrcadCellId(parsed.cell) || parsed.cell === WINDOWS_CONVERT_CELL_ID) {
+    if (!isWindowsHostCellId(parsed.cell)) {
       throw new Error(`expected a relay cell, got ${parsed.cell}`)
     }
     const target = windowsHostSshTarget(parsed, windowsHostCell(parsed.cell, parsed.target), 'r1')

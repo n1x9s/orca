@@ -7,7 +7,7 @@
 import type { FolderWorkspace } from '../../../src/shared/folder-workspace-types'
 import type { ProjectGroup } from '../../../src/shared/project-group-types'
 import type { Repo } from '../../../src/shared/repo-types'
-import type { SshTargetCreateInput } from '../../../src/shared/ssh-types'
+import type { SshTarget, SshTargetCreateInput } from '../../../src/shared/ssh-types'
 import { getDefaultWorkspaceSession } from '../../../src/shared/constants'
 import { toSshExecutionHostId } from '../../../src/shared/execution-host'
 import { normalizeSshTarget } from '../../../src/main/persistence/leasing-ssh-ptys/ssh-normalization'
@@ -36,6 +36,42 @@ function nextGeneration(state: Record<string, unknown>): number {
       ...targets.map((target) => (typeof target?.generation === 'number' ? target.generation : 0))
     ) + 1
   )
+}
+
+/** As SshConnectionStore.addTarget registers it: config alias, manual source, fresh generation. */
+function pushRelayEraTarget(
+  state: Record<string, unknown>,
+  input: SshTargetCreateInput,
+  targetId: string,
+  extra: Partial<SshTarget> = {}
+): void {
+  const generation = nextGeneration(state)
+  state.sshTargetGenerationCounter = generation
+  pushRow(
+    state,
+    'sshTargets',
+    normalizeSshTarget({
+      ...input,
+      id: targetId,
+      configHost: input.host,
+      source: 'manual',
+      generation,
+      ...extra
+    })
+  )
+}
+
+/** Only the relay-era target, for a cell that adds its own project once connected. */
+export function seedRelayEraTarget(
+  userDataDir: string,
+  input: SshTargetCreateInput,
+  extra: Partial<SshTarget> = {}
+): string {
+  const targetId = `ssh-upgrade-${Date.now()}`
+  mutateStoppedProfileState(userDataDir, (state) =>
+    pushRelayEraTarget(state, input, targetId, extra)
+  )
+  return targetId
 }
 
 export function seedRelayEraProfile(
@@ -125,27 +161,20 @@ export function seedRelayEraProfile(
     },
     tabGroups: {
       [worktreeId]: [
-        { id: groupId, worktreeId, activeTabId: tabId, tabOrder: [tabId], recentTabIds: [tabId] }
+        {
+          id: groupId,
+          worktreeId,
+          activeTabId: tabId,
+          tabOrder: [tabId],
+          recentTabIds: [tabId]
+        }
       ]
     },
     tabGroupLayouts: { [worktreeId]: { type: 'leaf', groupId } },
     activeGroupIdByWorktree: { [worktreeId]: groupId }
   }
   mutateStoppedProfileState(userDataDir, (state) => {
-    // As SshConnectionStore.addTarget registers it: config alias, manual source, fresh generation.
-    const generation = nextGeneration(state)
-    state.sshTargetGenerationCounter = generation
-    pushRow(
-      state,
-      'sshTargets',
-      normalizeSshTarget({
-        ...input,
-        id: targetId,
-        configHost: input.host,
-        source: 'manual',
-        generation
-      })
-    )
+    pushRelayEraTarget(state, input, targetId)
     pushRow(state, 'repos', repo)
     pushRow(state, 'projectGroups', group)
     pushRow(state, 'folderWorkspaces', folder)

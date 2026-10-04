@@ -5,6 +5,7 @@ import { parse } from 'yaml'
 import {
   WINDOWS_FORBIDDEN_TOOLS,
   WINDOWS_HOST_CELL_IDS,
+  WINDOWS_CLI_MATRIX_CELL_IDS,
   WINDOWS_CONVERT_CELL_ID,
   WINDOWS_ORCAD_CELL_IDS
 } from '../../src/main/ssh/ssh-windows-host-cells.ts'
@@ -56,10 +57,18 @@ describe('SSH Windows-host workflow', () => {
       'x64/windows-2022/inbox',
       'x64/windows-2022/preview'
     ])
-    expect(job.env).toMatchObject({ ORCA_BACKGROUND_LAUNCH: '1', ORCA_ISOLATED_SSH_CI: '1' })
+    expect(job.env).toMatchObject({
+      ORCA_BACKGROUND_LAUNCH: '1',
+      ORCA_ISOLATED_SSH_CI: '1'
+    })
     expect(job.strategy['fail-fast']).toBe(false)
-    expect(job['timeout-minutes']).toBe(75)
-    expect(runStep['timeout-minutes']).toBe(50)
+    // The CLI matrix cells, dispatched by name only, get a longer budget.
+    expect(job['timeout-minutes']).toBe(
+      "${{ contains(github.event.inputs.cells || '', 'orcad-cli') && 160 || 75 }}"
+    )
+    expect(runStep['timeout-minutes']).toBe(
+      "${{ contains(github.event.inputs.cells || '', 'orcad-cli') && 130 || 50 }}"
+    )
   })
 
   it('overlaps only guarded ARM inbox capability preparation with the existing builds', () => {
@@ -104,7 +113,10 @@ describe('SSH Windows-host workflow', () => {
       "if('${{ matrix.server }}' -eq 'inbox' -and '${{ matrix.arch }}' -eq 'arm64'){$preparation="
     )
     expect(runStep.background).toBeUndefined()
-    expect(job.steps.at(-1)).toMatchObject({ if: 'always()', uses: 'actions/upload-artifact@v7' })
+    expect(job.steps.at(-1)).toMatchObject({
+      if: 'always()',
+      uses: 'actions/upload-artifact@v7'
+    })
   })
 
   it('shares one capability installer without bypassing native verification or private cleanup', () => {
@@ -188,9 +200,14 @@ describe('SSH Windows-host workflow', () => {
 
   it('provisions one private account for every cell, convert cell included', () => {
     expect(runStep.run).toContain(`$cells+='${WINDOWS_CONVERT_CELL_ID}'`)
-    // Only the convert cell reaches a managed server, through an SSH local forward.
+    // Only app cells reach a managed server, through an SSH local forward; they run last.
+    const appCells = /\$appCellIds=@\(([^)]*)\)/.exec(runStep.run)?.[1]
+    expect(appCells?.split(',').map((id) => id.trim().replaceAll("'", ''))).toEqual([
+      WINDOWS_CONVERT_CELL_ID,
+      ...WINDOWS_CLI_MATRIX_CELL_IDS
+    ])
     expect(runStep.run).toContain(
-      `$forwarding=if($cells[-1] -eq '${WINDOWS_CONVERT_CELL_ID}'){1}else{0}`
+      '$forwarding=@($cells | Where-Object {$appCellIds -contains $_}).Count'
     )
     expect(runStep.run).toContain('-ForwardingAccounts $forwarding')
     const provisioner = readFileSync(
