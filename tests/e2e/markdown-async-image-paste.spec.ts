@@ -142,6 +142,20 @@ test('image paste replaces its selection after editing during clipboard import',
     contentType: 'image/png'
   })
   await expect(editor.locator('p').first()).toHaveText('prefix continued hello ')
+  expect(
+    await editor.evaluate(() => {
+      const instance =
+        document.querySelector<RichMarkdownImageEditorElement>('.rich-markdown-editor')?.editor
+      if (!instance) {
+        throw new Error('Markdown editor unavailable')
+      }
+      const content: (string | undefined)[] = []
+      instance.state.doc.firstChild?.forEach((node) => {
+        content.push(node.isText ? node.text : node.type.name)
+      })
+      return content
+    })
+  ).toEqual(['prefix continued hello ', 'image'])
   await expect(editor.locator('p').nth(1)).toHaveText(
     'The selected word should be replaced by this image.'
   )
