@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, type RefObject } from 'react'
 
 const SLOT_SELECTOR = ':scope > [data-tab-strip-slot]'
+const ANY_SLOT_SELECTOR = '[data-tab-strip-slot]'
 const CLOSE_BUTTON_SELECTOR = '[data-tab-close-button]'
 // Why a window: a close can commit a tick after its click (store actions, confirm-free async paths).
 const MOUSE_CLOSE_WINDOW_MS = 1000
@@ -25,7 +26,7 @@ function readSlotWidths(strip: HTMLElement): Map<string, number> {
  * browser clamps scrollLeft and every tab left of the closed one slides under the cursor, and near
  * the overflow threshold every tab widens. After a single close made with the mouse, a trailing
  * spacer stands in for the closed tab, so tabs hold still and the next one slides in under the
- * cursor. The strip settles once the pointer leaves or the user does anything else.
+ * cursor. The strip settles once the pointer leaves or the user does anything but close another tab.
  */
 export function useTabStripCloseSpacer(
   tabStripRef: RefObject<HTMLDivElement | null>,
@@ -127,8 +128,12 @@ export function useTabStripCloseSpacer(
     const markMouseClose = (event: MouseEvent): void => {
       const target = event.target instanceof Element ? event.target : null
       const isCloseClick = event.type === 'click' && target?.closest(CLOSE_BUTTON_SELECTOR)
-      const isMiddleClick = event.type === 'auxclick' && event.button === 1
-      if (isCloseClick || isMiddleClick) {
+      // Why the close-button check: pinned tabs render none and ignore middle-click.
+      const isMiddleClose =
+        event.type === 'auxclick' &&
+        event.button === 1 &&
+        target?.closest(ANY_SLOT_SELECTOR)?.querySelector(CLOSE_BUTTON_SELECTOR)
+      if (isCloseClick || isMiddleClose) {
         mouseCloseAtRef.current = performance.now()
       }
     }
@@ -136,6 +141,7 @@ export function useTabStripCloseSpacer(
       extentRef.current = { ...extentRef.current, scrollLeft: strip.scrollLeft }
     }
     const settle = (): void => {
+      mouseCloseAtRef.current = Number.NEGATIVE_INFINITY
       if (releaseCloseSpacer()) {
         onRelease()
         recordStripExtent(strip)
@@ -143,7 +149,15 @@ export function useTabStripCloseSpacer(
     }
     // Why more than pointerleave: drag regions, hidden worktrees and app switches can swallow it.
     const onPointerDown = (event: PointerEvent): void => {
-      if (!(event.target instanceof Node && wrapper.contains(event.target))) {
+      const target = event.target instanceof Element ? event.target : null
+      // Why a tab-body press settles: it can start a drag, which must measure the settled strip.
+      const continuesSweep =
+        target !== null &&
+        wrapper.contains(target) &&
+        (event.button === 1 ||
+          !target.closest(ANY_SLOT_SELECTOR) ||
+          target.closest(CLOSE_BUTTON_SELECTOR) !== null)
+      if (!continuesSweep) {
         settle()
       }
     }
