@@ -1,5 +1,6 @@
 import { publicKeyFromBase64 } from '../../shared/e2ee-crypto'
 import type { PairingOffer } from '../../shared/pairing'
+import type { RuntimeHostStatusSnapshot } from '../../shared/runtime-host-status'
 import { classifyRemotePairingHostname } from '../../shared/remote-pairing-address'
 import {
   resolveEnvironment,
@@ -58,6 +59,15 @@ export function getRuntimeEnvironmentConnectPairing(
     endpoint: cached.bridge.endpoint,
     publicKeyB64: cached.bridge.publicKeyB64
   }
+}
+
+/** Annotates a status snapshot with the route its connection took; Relay-less servers are always direct. */
+export function withRuntimeEnvironmentRoute(
+  snapshot: RuntimeHostStatusSnapshot
+): RuntimeHostStatusSnapshot {
+  const bridge = bridges.get(snapshot.environmentId)?.bridge
+  const route = bridge ? bridge.activeRoute : 'direct'
+  return route ? { ...snapshot, route } : snapshot
 }
 
 export function disposeRuntimeEnvironmentRelayBridge(environmentId: string): void {

@@ -314,7 +314,7 @@ async function pairAndBridge(
     deviceToken: harness.relayOffer.deviceToken,
     publicKeyB64: bridge.publicKeyB64
   }
-  return { paired, pairing, readRoute: () => route }
+  return { paired, pairing, bridge, readRoute: () => route }
 }
 
 function statusThrough(pairing: PairingOffer) {
@@ -382,6 +382,7 @@ describe('runtime pairing through Orca Relay', () => {
 
     await expect(statusThrough(direct.pairing)).resolves.toMatchObject({ ok: true })
     expect(harness.state.clientConnections).toBe(relayDialsAfterPairing)
+    expect(direct.bridge.activeRoute).toBe('direct')
 
     const unreachable = new RuntimeEnvironmentRelayBridge({
       environmentId: 'env-unreachable-direct',
@@ -402,6 +403,7 @@ describe('runtime pairing through Orca Relay', () => {
       })
     ).resolves.toMatchObject({ ok: true })
     expect(harness.state.clientConnections).toBe(relayDialsAfterPairing + 1)
+    expect(unreachable.activeRoute).toBe('relay')
   }, 20_000)
 
   it('follows the director to the cell that now owns the server', async () => {

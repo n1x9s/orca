@@ -1,6 +1,9 @@
 import type { PairingOffer } from '../../shared/pairing'
 import { resolveEnvironment } from '../../shared/runtime-environment-store'
-import { getRuntimeEnvironmentConnectPairing } from './runtime-environment-relay-route'
+import {
+  getRuntimeEnvironmentConnectPairing,
+  withRuntimeEnvironmentRoute
+} from './runtime-environment-relay-route'
 import type { RuntimeHostStatusOwner } from '../../shared/runtime-host-status-owner'
 import type { RuntimeStatus } from '../../shared/runtime-types'
 import { createRuntimeEnvironmentStatusOwner } from './runtime-environment-status-owner'
@@ -83,7 +86,7 @@ export function resetRuntimeEnvironmentStatusOwners(): void {
 }
 
 export function getRuntimeEnvironmentStatusSnapshots() {
-  return [...statusOwners.values()].map(({ owner }) => owner.read())
+  return [...statusOwners.values()].map(({ owner }) => withRuntimeEnvironmentRoute(owner.read()))
 }
 
 export function sendRemoteRuntimeConnectionRequest<TResult>(

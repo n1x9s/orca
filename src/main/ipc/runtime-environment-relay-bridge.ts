@@ -43,6 +43,8 @@ export class RuntimeEnvironmentRelayBridge {
   private readonly unregisterConnector: () => void
   private relayPreferredUntil = 0
   private disposed = false
+  /** Route of the most recent host connection, shown beside the server's status. */
+  activeRoute: 'direct' | 'relay' | null = null
 
   constructor(private readonly target: RuntimeEnvironmentRelayBridgeTarget) {
     this.publicKeyB64 = publicKeyToBase64(this.keyPair.publicKey)
@@ -72,6 +74,9 @@ export class RuntimeEnvironmentRelayBridge {
   private async acceptUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer) {
     const session = new RuntimeRelayBridgeSession(this.keyPair, this.target.deviceToken)
     const opened = await this.openUpstream(session.upstreamEvents)
+    if (opened.ok) {
+      this.activeRoute = opened.upstream.route
+    }
     if (this.disposed || socket.destroyed || (!opened.ok && !opened.unauthorized)) {
       if (opened.ok) {
         opened.upstream.close()

@@ -3,7 +3,10 @@ import { sendRemoteRuntimeRequest } from '../../shared/remote-runtime-client'
 import { REMOTE_RUNTIME_SHARED_CONTROL_CAPABILITY } from '../../shared/protocol-version'
 import { ELECTRON_REMOTE_RUNTIME_CLIENT_CAPABILITIES } from '../../shared/electron-remote-runtime-client-capabilities'
 import type { KnownRuntimeEnvironment } from '../../shared/runtime-environments'
-import { getRuntimeEnvironmentConnectPairing } from './runtime-environment-relay-route'
+import {
+  getRuntimeEnvironmentConnectPairing,
+  withRuntimeEnvironmentRoute
+} from './runtime-environment-relay-route'
 import { recordRuntimeEnvironmentUsage } from './runtime-environment-usage-record'
 import { RuntimeHostStatusOwner } from '../../shared/runtime-host-status-owner'
 import {
@@ -75,7 +78,10 @@ export function createRuntimeEnvironmentStatusOwner(
           continue
         }
         try {
-          window.webContents.send(RUNTIME_HOST_STATUS_CHANNEL, snapshot)
+          window.webContents.send(
+            RUNTIME_HOST_STATUS_CHANNEL,
+            withRuntimeEnvironmentRoute(snapshot)
+          )
         } catch {
           /* A renderer can close during publication. */
         }

@@ -5,7 +5,11 @@ import {
   type KnownRuntimeEnvironment
 } from '../../shared/runtime-environments'
 
-type BridgeDouble = { target: { directEndpoint: string | null }; disposed: boolean }
+type BridgeDouble = {
+  target: { directEndpoint: string | null }
+  disposed: boolean
+  activeRoute: 'direct' | 'relay' | null
+}
 
 const { bridges } = vi.hoisted(() => {
   const created: BridgeDouble[] = []
@@ -17,6 +21,7 @@ vi.mock('./runtime-environment-relay-bridge', () => ({
     readonly publicKeyB64 = 'YnJpZGdlLWtleS1ieXRlcy1mb3ItdGVzdC0zMi1ieXRlcw=='
     readonly endpoint: string
     disposed = false
+    activeRoute: 'direct' | 'relay' | null = null
     constructor(readonly target: { environmentId: string; directEndpoint: string | null }) {
       this.endpoint = `ws://relay.orca.invalid/${target.environmentId}`
       bridges.push(this)
@@ -27,7 +32,8 @@ vi.mock('./runtime-environment-relay-bridge', () => ({
   }
 }))
 
-const { getRuntimeEnvironmentConnectPairing } = await import('./runtime-environment-relay-route')
+const { getRuntimeEnvironmentConnectPairing, withRuntimeEnvironmentRoute } =
+  await import('./runtime-environment-relay-route')
 
 const relay = {
   endpoint: {
@@ -97,5 +103,29 @@ describe('getRuntimeEnvironmentConnectPairing', () => {
     getRuntimeEnvironmentConnectPairing('/tmp/orca', { ...tailnet, pairingRevision: 200 })
     expect(first?.disposed).toBe(true)
     expect(bridges.at(-1)).not.toBe(first)
+  })
+
+  it('reports the route of the latest connection on status snapshots', () => {
+    const snapshot = (environmentId: string) => ({
+      environmentId,
+      pairingRevision: 100,
+      sequence: 1,
+      checkedAt: 1,
+      status: null,
+      verification: 'verified' as const,
+      transport: 'ready' as const
+    })
+    getRuntimeEnvironmentConnectPairing(
+      '/tmp/orca',
+      environment('relay-route', 'ws://127.0.0.1:6768', true)
+    )
+    const bridge = bridges.at(-1)
+
+    expect(withRuntimeEnvironmentRoute(snapshot('direct-only'))).toMatchObject({ route: 'direct' })
+    expect(withRuntimeEnvironmentRoute(snapshot('relay-route'))).not.toHaveProperty('route')
+    if (bridge) {
+      bridge.activeRoute = 'relay'
+    }
+    expect(withRuntimeEnvironmentRoute(snapshot('relay-route'))).toMatchObject({ route: 'relay' })
   })
 })
