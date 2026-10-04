@@ -51,11 +51,12 @@ export class RuntimeRpcPairing extends RuntimeRpcNetworkExposure {
     return this.pushUnregisterOutbox
   }
 
-  setMobileRelayBinding(deviceId: string, binding: RelayDeviceBinding): boolean {
+  setDeviceRelayBinding(deviceId: string, binding: RelayDeviceBinding): boolean {
     const current = this.deviceRegistry?.getDevice(deviceId)
     if (
-      current?.scope !== 'mobile' ||
-      this.deviceRegistry?.getMobilePairingConnectionMode(deviceId) === 'local-only'
+      !current ||
+      (current.scope === 'mobile' &&
+        this.deviceRegistry?.getMobilePairingConnectionMode(deviceId) === 'local-only')
     ) {
       return false
     }
@@ -109,8 +110,17 @@ export class RuntimeRpcPairing extends RuntimeRpcNetworkExposure {
 
   revokeRuntimeAccess(deviceId: string): boolean {
     const device = this.deviceRegistry?.getDevice(deviceId)
-    if (device?.scope !== 'runtime' || !this.deviceRegistry?.removeDevice(deviceId)) {
+    if (device?.scope !== 'runtime') {
       return false
+    }
+    if (device.relayBinding && !this.queueRelayDeviceRevoke(device.relayBinding)) {
+      return false
+    }
+    if (!this.deviceRegistry?.removeDevice(deviceId)) {
+      return false
+    }
+    if (device.relayBinding) {
+      this.mobileRelayPairingProvider?.onDemandStateChanged?.()
     }
     this.runtime.forgetClientNavigationState(deviceId)
     this.mobileSocketWiring?.terminateDeviceConnections(device.token)
