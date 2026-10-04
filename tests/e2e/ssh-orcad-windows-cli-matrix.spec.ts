@@ -82,6 +82,15 @@ function sshStderr(chunk: string): void {
   }
 }
 
+/** A Windows profile a crashed launch still holds must not replace the test's own failure. */
+async function disposeQuietly(session: { dispose: () => Promise<void> }): Promise<void> {
+  try {
+    await session.dispose()
+  } catch (error) {
+    console.warn('[e2e] Restart profile cleanup failed:', error)
+  }
+}
+
 async function waitForManaged(page: Page, targetId: string): Promise<string> {
   let environmentId = ''
   await expect
@@ -372,7 +381,7 @@ test('@orcad-cli-managed an empty Windows host deploys, serves CLI terminals thr
     if (app) {
       await session.close(app)
     }
-    await session.dispose()
+    await disposeQuietly(session)
     host.cleanup()
     rmSync(SCRATCH, { recursive: true, force: true })
   }
@@ -420,7 +429,7 @@ test('@orcad-cli-convert a seeded relay-era profile converts its Windows host, k
     if (app) {
       await session.close(app)
     }
-    await session.dispose()
+    await disposeQuietly(session)
     host.cleanup()
     rmSync(SCRATCH, { recursive: true, force: true })
   }
@@ -433,7 +442,12 @@ test('@orcad-cli-relay-kept an open relay terminal keeps a Windows host on the r
   resetScratch()
   const host = startOrcadConvertHost(HOST!, testInfo)
   // Long enough that the relay, and its terminal, outlive the app between launches.
-  const input = { ...host.input, relayGracePeriodSeconds: 900 }
+  // Pinned node: the lane hides host Node, so the default runtime can't start a relay here.
+  const input = {
+    ...host.input,
+    relayGracePeriodSeconds: 900,
+    remoteRuntime: 'pinned-node' as const
+  }
   const session = createRestartSession(testInfo, launchEnv())
   let app: ElectronApplication | null = null
   try {
@@ -567,7 +581,7 @@ test('@orcad-cli-relay-kept an open relay terminal keeps a Windows host on the r
     if (app) {
       await session.close(app)
     }
-    await session.dispose()
+    await disposeQuietly(session)
     host.cleanup()
     rmSync(SCRATCH, { recursive: true, force: true })
   }
