@@ -16,8 +16,10 @@ const SIGN_IN_GUIDANCE =
   'Sign this Orca profile in to an Orca account with Relay access (for example from the Orca desktop app on this machine), then restart orca serve --relay. The direct pairing link above still works.'
 
 // Why: the Relay coordinator reports both "signed out" and "not entitled" as offline, so
-// headless operators need this read to learn which account step is missing.
-async function readRelayAccountFailure(): Promise<ServeRelayPairingReadiness | null> {
+// the person sharing needs this read to learn which account step is missing.
+export async function readRelayAccountFailure(
+  signInGuidance: string
+): Promise<Extract<ServeRelayPairingReadiness, { available: false }> | null> {
   const cloudAuth = getOrcaCloudAuthConfig()
   if (!cloudAuth.configured) {
     return { available: false, code: 'relay_cloud_unconfigured', guidance: cloudAuth.setupMessage }
@@ -30,7 +32,7 @@ async function readRelayAccountFailure(): Promise<ServeRelayPairingReadiness | n
     return null
   }
   if (!context) {
-    return { available: false, code: 'relay_sign_in_required', guidance: SIGN_IN_GUIDANCE }
+    return { available: false, code: 'relay_sign_in_required', guidance: signInGuidance }
   }
   if (!context.relayEntitled) {
     return {
@@ -46,7 +48,7 @@ export async function createServeRelayPairingOffer(
   runtimeRpc: Pick<OrcaRuntimeRpcServer, 'createPairingOffer' | 'createRuntimeRelayPairingOffer'>,
   args: { address: string | null; name: string }
 ): Promise<PairingOfferUnavailable | ServeRelayPairingOffer> {
-  const accountFailure = await readRelayAccountFailure()
+  const accountFailure = await readRelayAccountFailure(SIGN_IN_GUIDANCE)
   if (accountFailure) {
     const direct = runtimeRpc.createPairingOffer({ ...args, scope: 'runtime' })
     return direct.available ? { ...direct, relay: accountFailure } : direct

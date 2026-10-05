@@ -160,4 +160,28 @@ describe('runtime-scoped Relay pairing', () => {
       )
     })
   })
+
+  it('a newer link revokes the Relay invite of the unused grant it replaces', async () => {
+    const onDemandStateChanged = vi.fn()
+    await withServer(relayProvider({ onDemandStateChanged }), async (server) => {
+      const first = await server.createRuntimeRelayPairingOffer({ address: '100.64.1.20' })
+      if (!first.available) {
+        throw new Error('expected a runtime pairing offer')
+      }
+      onDemandStateChanged.mockClear()
+
+      const next = server.createPairingOffer({
+        address: '100.64.1.20',
+        scope: 'runtime',
+        rotate: true
+      })
+
+      expect(next).toMatchObject({ available: true })
+      expect(server.getDeviceRegistry()?.getDevice(first.deviceId)).toBeNull()
+      expect(server.getRelayRevokeOutbox().pendingFor(ownerIdentityKey, relay.relayHostId)).toEqual(
+        [expect.objectContaining({ relayDeviceId: first.deviceId })]
+      )
+      expect(onDemandStateChanged).toHaveBeenCalled()
+    })
+  })
 })

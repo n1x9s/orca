@@ -4,6 +4,7 @@ import {
 } from '../../../shared/mobile-relay-mint-failure'
 import type { PairingRelay } from '../../../shared/mobile-relay-pairing-offer'
 import { encodePairingOffer, PAIRING_OFFER_VERSION } from '../../../shared/pairing'
+import type { RuntimePairingReach } from '../../../shared/runtime-pairing-reach'
 import { RuntimeRpcPairing } from './runtime-rpc-pairing'
 import type {
   MobileRelayPairingProvider,
@@ -23,10 +24,12 @@ const RELAY_BINDING_FAILURE: MobileRelayMintFailure = {
 }
 
 export class RuntimeRpcRelayPairing extends RuntimeRpcPairing {
-  /** Runtime-scoped offer for `orca serve --relay`; the direct offer survives a failed Relay mint. */
+  /** Runtime-scoped offer with a Relay invite; the direct offer survives a failed Relay mint. */
   async createRuntimeRelayPairingOffer(args: {
     address?: string | null
     name?: string
+    rotate?: boolean
+    reach?: RuntimePairingReach
   }): Promise<PairingOfferUnavailable | RuntimeRelayPairingOffer> {
     const direct = this.createPairingOffer({ ...args, scope: 'runtime' })
     if (!direct.available) {
