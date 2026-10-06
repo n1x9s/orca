@@ -180,13 +180,13 @@ function describeInviteFailure(close: RuntimeRelayLinkClose): RemotePairingFailu
   ) {
     return failure(
       'access-link-invalid',
-      'This Orca Relay link has expired or was already used. Restart orca serve --relay for a new link.'
+      'This Orca Relay link has expired or was already used. Generate a new link on the Orca server.'
     )
   }
   if (close.kind === 'refused' && close.code === MOBILE_RELAY_CLOSE_CODE.HOST_OFFLINE) {
     return failure(
       'host-unreachable',
-      'The Orca server is not connected to Orca Relay. Confirm orca serve --relay is still running.'
+      'The Orca server is not connected to Orca Relay. Confirm Relay sharing is still active on that server.'
     )
   }
   return failure(
