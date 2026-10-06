@@ -406,6 +406,42 @@ describe('runtime pairing through Orca Relay', () => {
     expect(unreachable.activeRoute).toBe('relay')
   }, 20_000)
 
+  it('falls back to Relay when the paired address now reaches a different Orca server', async () => {
+    const harness = await startHarness({ cellHonorsRevoke: true })
+    const foreignUserData = mkdtempSync(join(tmpdir(), 'orca-runtime-relay-foreign-'))
+    cleanups.push(() => rmSync(foreignUserData, { recursive: true, force: true }))
+    const foreign = new OrcaRuntimeRpcServer({
+      runtime: new OrcaRuntimeService(),
+      userDataPath: foreignUserData,
+      enableWebSocket: true,
+      wsPort: 0
+    })
+    await foreign.start()
+    cleanups.push(() => foreign.stop())
+    const { pairing, bridge } = await pairAndBridge(harness, {
+      directEndpoint: foreign.getWebSocketEndpoint()
+    })
+    const relayDialsAfterPairing = harness.state.clientConnections
+
+    await expect(statusThrough(pairing)).resolves.toMatchObject({ ok: true })
+    expect(bridge.activeRoute).toBe('relay')
+    await expect(statusThrough(pairing)).resolves.toMatchObject({ ok: true })
+    // Why +2 and no more: the second socket skips the foreign address and dials Relay directly.
+    expect(harness.state.clientConnections).toBe(relayDialsAfterPairing + 2)
+  }, 20_000)
+
+  it('still reports a grant the paired server revoked as unauthorized on the direct route', async () => {
+    const harness = await startHarness({ cellHonorsRevoke: false })
+    const { pairing } = await pairAndBridge(harness, {
+      directEndpoint: harness.server.getWebSocketEndpoint()
+    })
+    await expect(statusThrough(pairing)).resolves.toMatchObject({ ok: true })
+
+    expect(harness.server.revokeRuntimeAccess(harness.offer.deviceId)).toBe(true)
+
+    await expect(statusThrough(pairing)).rejects.toMatchObject({ code: 'unauthorized' })
+  }, 20_000)
+
   it('follows the director to the cell that now owns the server', async () => {
     const harness = await startHarness({ cellHonorsRevoke: true })
     const { pairing, readRoute } = await pairAndBridge(harness)

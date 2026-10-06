@@ -21,7 +21,10 @@ const DIRECT_ROUTE_CONNECT_TIMEOUT_MS = 4_000
 
 export type RuntimeRelayBridgeAuthentication = 'authenticated' | 'unauthorized' | 'failed'
 
-/** The host leg behind the bridge, already past transport setup and E2EE key agreement. */
+/**
+ * The host leg behind the bridge, already past transport setup and E2EE key agreement.
+ * A direct leg has not yet proven the host key: only `authenticate` does, by the host decrypting it.
+ */
 export type RuntimeRelayBridgeUpstream = {
   route: 'direct' | 'relay'
   authenticate(
@@ -77,14 +80,17 @@ export function openDirectBridgeUpstream(
       ws.removeAllListeners('message')
       ws.on('error', () => {})
       ws.terminate()
-      authWaiter?.('failed')
+      const settleAuth = authWaiter
+      settleAuth?.('failed')
       if (before === 'connecting' || before === 'awaiting_ready') {
         resolve({
           ok: false,
           unauthorized: false,
           message: outcome?.reason ?? 'Direct route closed'
         })
-      } else if (outcome) {
+      } else if (outcome && !settleAuth) {
+        // Why not during auth: a host that is not the paired one closes here, and the bridge
+        // must be free to retry through Relay instead of hearing a close.
         events.onClose(outcome.code, outcome.reason)
       }
     }
@@ -93,8 +99,18 @@ export function openDirectBridgeUpstream(
       route: 'direct',
       authenticate: (clientCapabilities) =>
         new Promise((settle) => {
+          if (phase !== 'keyed') {
+            settle('failed')
+            return
+          }
+          // Why: a host that is not the paired one may never answer; fall back before the client times out.
+          const authTimer = setTimeout(
+            () => shutdown({ code: 1006, reason: 'Direct route did not authenticate' }),
+            DIRECT_ROUTE_CONNECT_TIMEOUT_MS
+          )
           authWaiter = (outcome) => {
             authWaiter = null
+            clearTimeout(authTimer)
             if (outcome === 'authenticated') {
               phase = 'ready'
             }

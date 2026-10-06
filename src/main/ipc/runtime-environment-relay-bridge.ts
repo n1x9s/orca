@@ -72,11 +72,16 @@ export class RuntimeEnvironmentRelayBridge {
   }
 
   private async acceptUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer) {
-    const session = new RuntimeRelayBridgeSession(this.keyPair, this.target.deviceToken)
+    const session = new RuntimeRelayBridgeSession(this.keyPair, this.target.deviceToken, {
+      fallBackToRelay: (events) => {
+        this.relayPreferredUntil = Date.now() + RELAY_ROUTE_PREFERENCE_MS
+        return openRelayBridgeUpstream(this.target, events)
+      },
+      onAuthenticated: (route) => {
+        this.activeRoute = route
+      }
+    })
     const opened = await this.openUpstream(session.upstreamEvents)
-    if (opened.ok) {
-      this.activeRoute = opened.upstream.route
-    }
     if (this.disposed || socket.destroyed || (!opened.ok && !opened.unauthorized)) {
       if (opened.ok) {
         opened.upstream.close()

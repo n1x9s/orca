@@ -1,5 +1,6 @@
 import WebSocket from 'ws'
 import type nacl from 'tweetnacl'
+import type { RuntimeCapability } from '../../shared/protocol-version'
 import {
   decrypt,
   decryptBytes,
@@ -17,6 +18,12 @@ import type {
 } from './runtime-environment-relay-upstream'
 
 type BridgeSessionState = 'awaiting_hello' | 'awaiting_auth' | 'authenticating' | 'ready' | 'closed'
+
+export type RuntimeRelayBridgeSessionHooks = {
+  /** Opens the Relay leg after the direct endpoint answered but did not prove the paired key. */
+  fallBackToRelay(events: RuntimeRelayBridgeUpstreamEvents): Promise<RuntimeRelayBridgeUpstreamOpen>
+  onAuthenticated(route: RuntimeRelayBridgeUpstream['route']): void
+}
 
 /**
  * Answers the client stack's legacy handshake in-process, then relays plaintext to the host leg.
@@ -52,7 +59,8 @@ export class RuntimeRelayBridgeSession {
 
   constructor(
     private readonly bridgeKeys: nacl.BoxKeyPair,
-    private readonly deviceToken: string
+    private readonly deviceToken: string,
+    private readonly hooks: RuntimeRelayBridgeSessionHooks
   ) {}
 
   attach(ws: WebSocket, opened: RuntimeRelayBridgeUpstreamOpen): void {
@@ -137,24 +145,53 @@ export class RuntimeRelayBridgeSession {
       this.rejectClient()
       return
     }
-    const upstream = this.upstream
     this.state = 'authenticating'
     const clientCapabilities = parseRuntimeClientCapabilities(
       'clientCapabilities' in auth ? auth.clientCapabilities : undefined
     )
-    void upstream.authenticate(clientCapabilities).then((outcome) => {
+    void this.authenticateUpstream(this.upstream, clientCapabilities)
+  }
+
+  private async authenticateUpstream(
+    upstream: RuntimeRelayBridgeUpstream,
+    clientCapabilities: readonly RuntimeCapability[]
+  ): Promise<void> {
+    let outcome = await upstream.authenticate(clientCapabilities)
+    // Why: only the paired host can answer 'unauthorized' under our key; any other direct
+    // failure means the address now reaches someone else, so Relay may still reach the server.
+    if (outcome === 'failed' && upstream.route === 'direct' && this.state === 'authenticating') {
+      upstream.close()
+      this.upstream = null
+      const relay = await this.hooks.fallBackToRelay(this.upstreamEvents)
       if (this.state !== 'authenticating') {
+        if (relay.ok) {
+          relay.upstream.close()
+        }
         return
       }
-      if (outcome === 'unauthorized') {
-        this.rejectClient()
-      } else if (outcome === 'failed') {
-        this.closeClient(1011, 'The Orca server did not accept the session')
-      } else {
-        this.state = 'ready'
-        this.sendEncryptedControl({ type: 'e2ee_authenticated' })
+      if (!relay.ok) {
+        if (relay.unauthorized) {
+          this.rejectClient()
+        } else {
+          this.closeClient(1011, relay.message)
+        }
+        return
       }
-    })
+      this.upstream = relay.upstream
+      outcome = await relay.upstream.authenticate(clientCapabilities)
+    }
+    if (this.state !== 'authenticating' || !this.upstream) {
+      return
+    }
+    if (outcome === 'unauthorized') {
+      this.rejectClient()
+    } else if (outcome === 'failed') {
+      this.closeClient(1011, 'The Orca server did not accept the session')
+    } else {
+      this.state = 'ready'
+      this.hooks.onAuthenticated(this.upstream.route)
+      this.sendEncryptedControl({ type: 'e2ee_authenticated' })
+    }
   }
 
   // Why the same frame the host sends: the client marks the access revoked only on this shape.
